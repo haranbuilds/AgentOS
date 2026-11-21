@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     model_api_key: SecretStr | None = None
 
     otel_enabled: bool = False
+    model_timeout_seconds: float = Field(default=30.0, gt=0)
+    model_max_retries: int = Field(default=2, ge=0, le=5)
 
 
 settings = Settings()

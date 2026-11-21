@@ -160,10 +160,11 @@ class GeminiModelProvider:
 
         try:
             response = await self._client.models.generate_content(
-                model=request.model_name,
-                contents=contents,
-                config=config,
-            )
+            model=request.model_name,
+            contents=cast(Any, contents),
+            config=config,
+)
+            
 
             usage = response.usage_metadata
             finish_reason = None
