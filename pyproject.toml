@@ -5,6 +5,8 @@ description = "Enterprise Agent Execution and Governance Platform"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "google-genai>=3.6.1",
+    "groq>=1.7.0",
     "pydantic-settings>=2.16.3",
 ]
 
