@@ -1,12 +1,19 @@
+from typing import Any
+
 from google import genai
 from google.genai import errors, types
 
 from agentos.config import settings
-from agentos.models.contracts import ModelRequest, ModelResponse
+from agentos.models.contracts import (
+    ModelRequest,
+    ModelResponse,
+    ToolCall,
+)
 from agentos.models.errors import (
     ModelAuthenticationError,
     ModelProviderError,
     ModelRateLimitError,
+    ModelResponseError,
     ModelTimeoutError,
     ModelUnavailableError,
 )
@@ -42,22 +49,109 @@ class GeminiModelProvider:
                 system_instruction = message.content
                 continue
 
-            role = (
-                "model"
-                if message.role == "assistant"
-                else "user"
-            )
+            if message.role == "tool":
+                tool_name = self._find_tool_name(
+                    request.messages,
+                    message.tool_call_id,
+                )
+
+                if tool_name is None:
+                    raise ModelResponseError(
+                        "Unable to match tool result "
+                        "to a previous function call."
+                    )
+
+                contents.append(
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                function_response=(
+                                    types.FunctionResponse(
+                                        name=tool_name,
+                                        id=message.tool_call_id,
+                                        response={
+                                            "result": message.content,
+                                        },
+                                    )
+                                )
+                            )
+                        ],
+                    )
+                )
+                continue
+
+            parts: list[types.Part] = []
+
+            if message.content:
+                parts.append(
+                    types.Part(text=message.content)
+                )
+
+            if message.tool_calls:
+                for call in message.tool_calls:
+                    parts.append(
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                name=call.name,
+                                args=call.arguments,
+                                id=call.id,
+                            )
+                        )
+                    )
 
             contents.append(
                 types.Content(
-                    role=role,
-                    parts=[
-                        types.Part(text=message.content),
-                    ],
+                    role=(
+                        "model"
+                        if message.role == "assistant"
+                        else "user"
+                    ),
+                    parts=parts,
                 )
             )
 
         return system_instruction, contents
+
+    def _find_tool_name(
+        self,
+        messages: list[Any],
+        tool_call_id: str | None,
+    ) -> str | None:
+        if tool_call_id is None:
+            return None
+
+        for message in reversed(messages):
+            if not message.tool_calls:
+                continue
+
+            for call in message.tool_calls:
+                if call.id == tool_call_id:
+                    return call.name
+
+        return None
+
+    def _convert_tools(
+        self,
+        request: ModelRequest,
+    ) -> list[types.Tool] | None:
+        if not request.tools:
+            return None
+
+        declarations = [
+            types.FunctionDeclaration(
+                name=tool.name,
+                description=tool.description,
+                parameters=tool.parameters,
+            )
+            for tool in request.tools
+        ]
+
+        return [
+            types.Tool(
+                function_declarations=declarations,
+            )
+        ]
 
     async def generate(
         self,
@@ -67,10 +161,13 @@ class GeminiModelProvider:
             request
         )
 
+        tools = self._convert_tools(request)
+
         config = types.GenerateContentConfig(
             temperature=request.temperature,
             max_output_tokens=request.max_tokens,
             system_instruction=system_instruction,
+            tools=tools,
         )
 
         try:
@@ -81,8 +178,8 @@ class GeminiModelProvider:
             )
 
             usage = response.usage_metadata
-
             finish_reason = None
+            normalized_tool_calls: list[ToolCall] = []
 
             if response.candidates:
                 candidate = response.candidates[0]
@@ -91,6 +188,30 @@ class GeminiModelProvider:
                     finish_reason = (
                         candidate.finish_reason.name.lower()
                     )
+
+                if candidate.content and candidate.content.parts:
+                    for index, part in enumerate(
+                        candidate.content.parts
+                    ):
+                        function_call = part.function_call
+
+                        if function_call is None:
+                            continue
+
+                        normalized_tool_calls.append(
+                            ToolCall(
+                                id=(
+                                    function_call.id
+                                    or f"gemini_call_{index}"
+                                ),
+                                name=function_call.name or "",
+                                arguments=(
+                                    dict(function_call.args)
+                                    if function_call.args
+                                    else {}
+                                ),
+                            )
+                        )
 
             return ModelResponse(
                 content=response.text or "",
@@ -106,6 +227,7 @@ class GeminiModelProvider:
                     if usage is not None
                     else None
                 ),
+                tool_calls=normalized_tool_calls,
             )
 
         except TimeoutError as exc:
@@ -124,7 +246,10 @@ class GeminiModelProvider:
                     "Gemini rate limit exceeded."
                 ) from exc
 
-            if exc.code is not None and exc.code >= 500:
+            if (
+                exc.code is not None
+                and exc.code >= 500
+            ):
                 raise ModelUnavailableError(
                     "Gemini service is unavailable."
                 ) from exc
