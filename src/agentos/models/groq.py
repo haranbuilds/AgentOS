@@ -1,11 +1,16 @@
 import json
-from typing import Any
+from typing import Any, cast
 
 from groq import (
     APIConnectionError,
     APIError,
+    APIStatusError,
     APITimeoutError,
     AsyncGroq,
+)
+from groq.types.chat import (
+    ChatCompletionMessageParam,
+    ChatCompletionToolParam,
 )
 
 from agentos.config import settings
@@ -29,9 +34,7 @@ class GroqModelProvider:
         api_key = settings.model_api_key
 
         if api_key is None:
-            raise ValueError(
-                "MODEL_API_KEY must be configured."
-            )
+            raise ValueError("MODEL_API_KEY must be configured.")
 
         self._client = AsyncGroq(
             api_key=api_key.get_secret_value(),
@@ -41,8 +44,8 @@ class GroqModelProvider:
     def _convert_messages(
         self,
         request: ModelRequest,
-    ) -> list[dict[str, Any]]:
-        messages: list[dict[str, Any]] = []
+    ) -> list[ChatCompletionMessageParam]:
+        messages: list[ChatCompletionMessageParam] = []
 
         for message in request.messages:
             converted: dict[str, Any] = {
@@ -60,27 +63,27 @@ class GroqModelProvider:
                         "type": "function",
                         "function": {
                             "name": call.name,
-                            "arguments": json.dumps(
-                                call.arguments
-                            ),
+                            "arguments": json.dumps(call.arguments),
                         },
                     }
                     for call in message.tool_calls
                 ]
 
-            messages.append(converted)
+            messages.append(cast(ChatCompletionMessageParam, converted))
 
         return messages
 
     def _convert_tools(
         self,
         request: ModelRequest,
-    ) -> list[dict[str, Any]] | None:
+    ) -> list[ChatCompletionToolParam] | None:
         if not request.tools:
             return None
 
-        return [
-            {
+        tools: list[ChatCompletionToolParam] = []
+
+        for tool in request.tools:
+            converted: dict[str, Any] = {
                 "type": "function",
                 "function": {
                     "name": tool.name,
@@ -88,8 +91,10 @@ class GroqModelProvider:
                     "parameters": tool.parameters,
                 },
             }
-            for tool in request.tools
-        ]
+
+            tools.append(cast(ChatCompletionToolParam, converted))
+
+        return tools
 
     async def generate(
         self,
@@ -114,18 +119,12 @@ class GroqModelProvider:
             if choice.message.tool_calls:
                 for call in choice.message.tool_calls:
                     try:
-                        arguments = json.loads(
-                            call.function.arguments
-                        )
+                        arguments = json.loads(call.function.arguments)
                     except json.JSONDecodeError as exc:
-                        raise ModelResponseError(
-                            "Groq returned invalid tool arguments."
-                        ) from exc
+                        raise ModelResponseError("Groq returned invalid tool arguments.") from exc
 
                     if not isinstance(arguments, dict):
-                        raise ModelResponseError(
-                            "Tool arguments must be a JSON object."
-                        )
+                        raise ModelResponseError("Tool arguments must be a JSON object.")
 
                     normalized_tool_calls.append(
                         ToolCall(
@@ -139,48 +138,28 @@ class GroqModelProvider:
                 content=choice.message.content or "",
                 model_name=request.model_name,
                 finish_reason=choice.finish_reason,
-                prompt_tokens=(
-                    usage.prompt_tokens
-                    if usage is not None
-                    else None
-                ),
-                completion_tokens=(
-                    usage.completion_tokens
-                    if usage is not None
-                    else None
-                ),
+                prompt_tokens=(usage.prompt_tokens if usage is not None else None),
+                completion_tokens=(usage.completion_tokens if usage is not None else None),
                 tool_calls=normalized_tool_calls,
             )
 
         except APITimeoutError as exc:
-            raise ModelTimeoutError(
-                "Groq request timed out."
-            ) from exc
+            raise ModelTimeoutError("Groq request timed out.") from exc
 
         except APIConnectionError as exc:
-            raise ModelUnavailableError(
-                "Unable to connect to Groq."
-            ) from exc
+            raise ModelUnavailableError("Unable to connect to Groq.") from exc
 
-        except APIError as exc:
+        except APIStatusError as exc:
             if exc.status_code in (401, 403):
-                raise ModelAuthenticationError(
-                    "Groq authentication failed."
-                ) from exc
+                raise ModelAuthenticationError("Groq authentication failed.") from exc
 
             if exc.status_code == 429:
-                raise ModelRateLimitError(
-                    "Groq rate limit exceeded."
-                ) from exc
+                raise ModelRateLimitError("Groq rate limit exceeded.") from exc
 
-            if (
-                exc.status_code is not None
-                and exc.status_code >= 500
-            ):
-                raise ModelUnavailableError(
-                    "Groq service is unavailable."
-                ) from exc
+            if exc.status_code >= 500:
+                raise ModelUnavailableError("Groq service is unavailable.") from exc
 
-            raise ModelProviderError(
-                "Groq request failed."
-            ) from exc
+            raise ModelProviderError("Groq request failed.") from exc
+
+        except APIError as exc:
+            raise ModelProviderError("Groq request failed.") from exc

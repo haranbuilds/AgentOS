@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, cast
 
 from google import genai
 from google.genai import errors, types
@@ -24,16 +24,12 @@ class GeminiModelProvider:
         api_key = settings.model_api_key
 
         if api_key is None:
-            raise ValueError(
-                "MODEL_API_KEY must be configured."
-            )
+            raise ValueError("MODEL_API_KEY must be configured.")
 
         self._client = genai.Client(
             api_key=api_key.get_secret_value(),
             http_options=types.HttpOptions(
-                timeout=int(
-                    settings.model_timeout_seconds * 1000
-                ),
+                timeout=int(settings.model_timeout_seconds * 1000),
             ),
         ).aio
 
@@ -57,8 +53,7 @@ class GeminiModelProvider:
 
                 if tool_name is None:
                     raise ModelResponseError(
-                        "Unable to match tool result "
-                        "to a previous function call."
+                        "Unable to match tool result to a previous function call."
                     )
 
                 contents.append(
@@ -84,9 +79,7 @@ class GeminiModelProvider:
             parts: list[types.Part] = []
 
             if message.content:
-                parts.append(
-                    types.Part(text=message.content)
-                )
+                parts.append(types.Part(text=message.content))
 
             if message.tool_calls:
                 for call in message.tool_calls:
@@ -102,11 +95,7 @@ class GeminiModelProvider:
 
             contents.append(
                 types.Content(
-                    role=(
-                        "model"
-                        if message.role == "assistant"
-                        else "user"
-                    ),
+                    role=("model" if message.role == "assistant" else "user"),
                     parts=parts,
                 )
             )
@@ -127,7 +116,8 @@ class GeminiModelProvider:
 
             for call in message.tool_calls:
                 if call.id == tool_call_id:
-                    return call.name
+                    name = call.name
+                    return name if isinstance(name, str) else None
 
         return None
 
@@ -142,7 +132,7 @@ class GeminiModelProvider:
             types.FunctionDeclaration(
                 name=tool.name,
                 description=tool.description,
-                parameters=tool.parameters,
+                parameters=types.Schema.model_validate(tool.parameters),
             )
             for tool in request.tools
         ]
@@ -157,9 +147,7 @@ class GeminiModelProvider:
         self,
         request: ModelRequest,
     ) -> ModelResponse:
-        system_instruction, contents = self._convert_messages(
-            request
-        )
+        system_instruction, contents = self._convert_messages(request)
 
         tools = self._convert_tools(request)
 
@@ -167,7 +155,7 @@ class GeminiModelProvider:
             temperature=request.temperature,
             max_output_tokens=request.max_tokens,
             system_instruction=system_instruction,
-            tools=tools,
+            tools=cast(Any, tools),
         )
 
         try:
@@ -185,14 +173,10 @@ class GeminiModelProvider:
                 candidate = response.candidates[0]
 
                 if candidate.finish_reason is not None:
-                    finish_reason = (
-                        candidate.finish_reason.name.lower()
-                    )
+                    finish_reason = candidate.finish_reason.name.lower()
 
                 if candidate.content and candidate.content.parts:
-                    for index, part in enumerate(
-                        candidate.content.parts
-                    ):
+                    for index, part in enumerate(candidate.content.parts):
                         function_call = part.function_call
 
                         if function_call is None:
@@ -200,16 +184,9 @@ class GeminiModelProvider:
 
                         normalized_tool_calls.append(
                             ToolCall(
-                                id=(
-                                    function_call.id
-                                    or f"gemini_call_{index}"
-                                ),
+                                id=(function_call.id or f"gemini_call_{index}"),
                                 name=function_call.name or "",
-                                arguments=(
-                                    dict(function_call.args)
-                                    if function_call.args
-                                    else {}
-                                ),
+                                arguments=(dict(function_call.args) if function_call.args else {}),
                             )
                         )
 
@@ -217,43 +194,22 @@ class GeminiModelProvider:
                 content=response.text or "",
                 model_name=request.model_name,
                 finish_reason=finish_reason,
-                prompt_tokens=(
-                    usage.prompt_token_count
-                    if usage is not None
-                    else None
-                ),
-                completion_tokens=(
-                    usage.candidates_token_count
-                    if usage is not None
-                    else None
-                ),
+                prompt_tokens=(usage.prompt_token_count if usage is not None else None),
+                completion_tokens=(usage.candidates_token_count if usage is not None else None),
                 tool_calls=normalized_tool_calls,
             )
 
         except TimeoutError as exc:
-            raise ModelTimeoutError(
-                "Gemini request timed out."
-            ) from exc
+            raise ModelTimeoutError("Gemini request timed out.") from exc
 
         except errors.APIError as exc:
             if exc.code in (401, 403):
-                raise ModelAuthenticationError(
-                    "Gemini authentication failed."
-                ) from exc
+                raise ModelAuthenticationError("Gemini authentication failed.") from exc
 
             if exc.code == 429:
-                raise ModelRateLimitError(
-                    "Gemini rate limit exceeded."
-                ) from exc
+                raise ModelRateLimitError("Gemini rate limit exceeded.") from exc
 
-            if (
-                exc.code is not None
-                and exc.code >= 500
-            ):
-                raise ModelUnavailableError(
-                    "Gemini service is unavailable."
-                ) from exc
+            if exc.code is not None and exc.code >= 500:
+                raise ModelUnavailableError("Gemini service is unavailable.") from exc
 
-            raise ModelProviderError(
-                "Gemini request failed."
-            ) from exc
+            raise ModelProviderError("Gemini request failed.") from exc

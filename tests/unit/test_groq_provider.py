@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -20,8 +21,10 @@ def provider(
         MagicMock(get_secret_value=lambda: "test-api-key"),
     )
 
+    mock_create = AsyncMock()
+
     mock_client = MagicMock()
-    mock_client.chat.completions.create = AsyncMock()
+    mock_client.chat.completions.create = mock_create
 
     monkeypatch.setattr(
         "agentos.models.groq.AsyncGroq",
@@ -82,9 +85,11 @@ async def test_generate_normalizes_response(
         ),
     )
 
-    provider._client.chat.completions.create.return_value = (
-        mock_response
+    create = cast(
+        AsyncMock,
+        provider._client.chat.completions.create,
     )
+    create.return_value = mock_response
 
     response = await provider.generate(request_data)
 
@@ -103,10 +108,13 @@ async def test_generate_timeout(
 ) -> None:
     from groq import APITimeoutError
 
-    provider._client.chat.completions.create.side_effect = (
-        APITimeoutError(
-            request=MagicMock(),
-        )
+    create = cast(
+        AsyncMock,
+        provider._client.chat.completions.create,
+    )
+
+    create.side_effect = APITimeoutError(
+        request=MagicMock(),
     )
 
     with pytest.raises(ModelTimeoutError):
@@ -139,9 +147,11 @@ async def test_generate_normalizes_tool_call(
         usage=None,
     )
 
-    provider._client.chat.completions.create.return_value = (
-        mock_response
+    create = cast(
+        AsyncMock,
+        provider._client.chat.completions.create,
     )
+    create.return_value = mock_response
 
     response = await provider.generate(request_data)
 

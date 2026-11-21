@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -58,13 +59,12 @@ def test_convert_messages(
     provider: GeminiModelProvider,
     request_data: ModelRequest,
 ) -> None:
-    system_instruction, contents = (
-        provider._convert_messages(request_data)
-    )
+    system_instruction, contents = provider._convert_messages(request_data)
 
     assert system_instruction is None
     assert len(contents) == 1
     assert contents[0].role == "user"
+    assert contents[0].parts is not None
     assert contents[0].parts[0].text == "Hello"
 
 
@@ -73,28 +73,30 @@ async def test_generate_normalizes_response(
     provider: GeminiModelProvider,
     request_data: ModelRequest,
 ) -> None:
-    provider._client.models.generate_content.return_value = (
-        SimpleNamespace(
-            text="Hello from Gemini.",
-            candidates=[
-                SimpleNamespace(
-                    finish_reason=SimpleNamespace(
-                        name="STOP",
-                    ),
-                    content=SimpleNamespace(
-                        parts=[
-                            SimpleNamespace(
-                                function_call=None,
-                            )
-                        ]
-                    ),
-                )
-            ],
-            usage_metadata=SimpleNamespace(
-                prompt_token_count=10,
-                candidates_token_count=5,
-            ),
-        )
+    generate_content = cast(
+        AsyncMock,
+        provider._client.models.generate_content,
+    )
+    generate_content.return_value = SimpleNamespace(
+        text="Hello from Gemini.",
+        candidates=[
+            SimpleNamespace(
+                finish_reason=SimpleNamespace(
+                    name="STOP",
+                ),
+                content=SimpleNamespace(
+                    parts=[
+                        SimpleNamespace(
+                            function_call=None,
+                        )
+                    ]
+                ),
+            )
+        ],
+        usage_metadata=SimpleNamespace(
+            prompt_token_count=10,
+            candidates_token_count=5,
+        ),
     )
 
     response = await provider.generate(request_data)
@@ -113,9 +115,11 @@ async def test_generate_timeout(
     provider: GeminiModelProvider,
     request_data: ModelRequest,
 ) -> None:
-    provider._client.models.generate_content.side_effect = (
-        TimeoutError
+    generate_content = cast(
+        AsyncMock,
+        provider._client.models.generate_content,
     )
+    generate_content.side_effect = TimeoutError
 
     with pytest.raises(ModelTimeoutError):
         await provider.generate(request_data)
@@ -128,12 +132,13 @@ async def test_generate_authentication_error(
 ) -> None:
     from google.genai.errors import APIError
 
-    provider._client.models.generate_content.side_effect = (
-        APIError(
-            code=401,
-            response=MagicMock(),
-            message="Unauthorized",
-        )
+    generate_content = cast(
+        AsyncMock,
+        provider._client.models.generate_content,
+    )
+    generate_content.side_effect = APIError(
+        code=401,
+        response_json={"error": {"message": "Unauthorized"}},
     )
 
     with pytest.raises(ModelAuthenticationError):
@@ -167,9 +172,9 @@ def test_convert_tools(
 
     assert tools is not None
     assert len(tools) == 1
-    assert tools[0].function_declarations[0].name == (
-        "get_balance"
-    )
+    declarations = tools[0].function_declarations
+    assert declarations is not None
+    assert declarations[0].name == ("get_balance")
 
 
 def test_convert_assistant_tool_call_history(
@@ -196,7 +201,9 @@ def test_convert_assistant_tool_call_history(
 
     _, contents = provider._convert_messages(request)
 
-    function_call = contents[0].parts[0].function_call
+    parts = contents[0].parts
+    assert parts is not None
+    function_call = parts[0].function_call
 
     assert function_call is not None
     assert function_call.name == "get_balance"
@@ -234,9 +241,9 @@ def test_convert_tool_result_history(
 
     _, contents = provider._convert_messages(request)
 
-    function_response = (
-        contents[1].parts[0].function_response
-    )
+    parts = contents[1].parts
+    assert parts is not None
+    function_response = parts[0].function_response
 
     assert function_response is not None
     assert function_response.name == "get_balance"
